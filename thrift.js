@@ -25,6 +25,7 @@ var assert = require('assert');
 var util = require('util');
 var idl = require('./thrift-idl');
 var Result = require('bufrw/result');
+var path = require('path');
 
 var ThriftService = require('./service').ThriftService;
 var ThriftStruct = require('./struct').ThriftStruct;
@@ -48,11 +49,18 @@ var ThriftTypedef = require('./typedef').ThriftTypedef;
 
 function Thrift(options) {
     var self = this;
+    self.program = options.program;
+
+    if (typeof self.program !== 'undefined') {
+        assert(typeof self.program === 'object', 'program must be object');
+    }
 
     assert(options, 'options required');
     assert(typeof options === 'object', 'options must be object');
+
     assert(options.source, 'source required');
-    assert(typeof options.source === 'string', 'source must be string');
+    assert(typeof options.source === 'string'
+           || typeof options.source === 'object', 'source must be string or object');
 
     self.strict = options.strict !== undefined ? options.strict : true;
 
@@ -60,13 +68,25 @@ function Thrift(options) {
     self.services = Object.create(null);
     self.types = Object.create(null);
     self.consts = Object.create(null);
+    self.imports = Object.create(null);
 
     // Two passes permits forward references and cyclic references.
     // First pass constructs objects.
     self.compile(options.source);
-    // Second pass links field references of structs.
-    self.link();
+
+    // Program calls link after all files are compiled.
+    if (typeof self.program === 'undefined') {
+        // Second pass links field references of structs.
+        self.link();
+    }
 }
+
+Thrift.parse = function parse(source) {
+    var syntax = idl.parse(source);
+    assert.equal(syntax.type, 'Program', 'expected a program');
+
+    return syntax;
+};
 
 Thrift.prototype.getType = function getType(name) {
     var self = this;
@@ -96,9 +116,36 @@ Thrift.prototype.baseTypes = {
 
 Thrift.prototype.compile = function compile(source) {
     var self = this;
-    var syntax = idl.parse(source);
-    assert.equal(syntax.type, 'Program', 'expected a program');
+
+    var syntax;
+    if (typeof source !== 'object') {
+        syntax = Thrift.parse(source);
+    } else {
+        syntax = source;
+    }
+
+    self.parseHeaders(syntax.headers);
     self.compileDefinitions(syntax.definitions);
+};
+
+Thrift.prototype.parseHeaders = function parseHeaders(headers) {
+    var self = this;
+    for (var index = 0; index < headers.length; index++) {
+        var header = headers[0];
+        var headerType = header[0][0];
+
+        if (headerType === 'include') {
+            var filename = header[1];
+            if (filename) {
+                var modulename = path.basename(filename).replace('.thrift', '');
+                self.imports[modulename] = {
+                    relativePath: filename,
+                    absolutePath: null,
+                    spec: null
+                };
+            }
+        }
+    }
 };
 
 Thrift.prototype.claim = function claim(name, def) {
@@ -179,6 +226,18 @@ Thrift.prototype.compileEnum = function compileEnum(def) {
     self.types[spec.name] = spec;
 };
 
+Thrift.prototype.linkImports = function linkImports() {
+    var self = this;
+    if (self.program) {
+        var imports = Object.keys(self.imports);
+        for (var index = 0; index < imports.length; index++) {
+            var moduleName = imports[index];
+            var modulePath = self.imports[moduleName].absolutePath;
+            self.imports[moduleName].spec = self.program.getSpec(modulePath);
+        }
+    }
+};
+
 Thrift.prototype.link = function link() {
     var self = this;
     var index;
@@ -209,6 +268,16 @@ Thrift.prototype.resolve = function resolve(def) {
     if (def.type === 'BaseType') {
         return new self.baseTypes[def.baseType](def.annotations);
     } else if (def.type === 'Identifier') {
+        if (def.name.indexOf('.') !== -1) {
+            var parts = def.name.split('.');
+            var moduleName = parts[0];
+            var restType = parts.slice(1).join('.');
+
+            var spec = self.imports[moduleName].spec;
+            if (spec) {
+                return spec.resolve({name: restType, type: def.type});
+            }
+        }
         if (!self.types[def.name]) {
             err = new Error('cannot resolve reference to ' + def.name + ' at ' + def.line + ':' + def.column);
             err.line = def.line;

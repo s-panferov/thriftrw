@@ -49,3 +49,4 @@ require('./typedef');
 require('./const');
 require('./default');
 require('./enum');
+require('./program');

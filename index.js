@@ -87,3 +87,4 @@ module.exports.VoidRW = require('./void').VoidRW;
 module.exports.ThriftVoid = require('./void').ThriftVoid;
 
 module.exports.Thrift = require('./thrift').Thrift;
+module.exports.ThriftProgram = require('./thrift-program').ThriftProgram;
